@@ -1,0 +1,11 @@
+# rename this file to config.toml and fill in the values
+
+[discord]
+intents = 0
+token = ""
+app_id = ""
+
+[lavalink]
+host = ""
+port = 0
+password = ""
