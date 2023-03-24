@@ -16,6 +16,7 @@ pub enum Event {
     SendWS(String),
     LavalinkClosed,
     TrackEnd(String),
+    DestroyPlayer(String),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -133,8 +134,11 @@ pub struct Member {
 }
 
 impl Member {
-    pub fn get_voice_channel(&self) -> &String {
-        self.voice.as_ref().unwrap().channel_id.as_ref().unwrap()
+    pub fn get_voice_channel(&self) -> Option<&String> {
+        self.voice
+            .as_ref()
+            .and_then(|v| v.channel_id.as_ref())
+            .and_then(|c| Some(c))
     }
 }
 
@@ -177,16 +181,16 @@ fn rec_options<'i>(options: &'i Vec<InteractionDataOption>, name: &str) -> Optio
 }
 
 impl Interaction {
-    pub async fn ack(&self) -> Result<(), String> {
-        let (id, token) = (&self.id, &self.token);
+    pub async fn ack(&self, flags: u32) -> Result<(), String> {
+        let (int_id, token) = (&self.id, &self.token);
 
-        let url = format!("https://discord.com/api/v10/interactions/{id}/{token}/callback");
+        let url = format!("https://discord.com/api/v10/interactions/{int_id}/{token}/callback");
 
         let client = reqwest::Client::new();
 
         let body = InteractionCallback {
             interaction_type: 5,
-            data: None,
+            data: InteractionCallbackData::new().set_flags(flags),
         };
 
         let res = client
@@ -205,20 +209,16 @@ impl Interaction {
         }
     }
 
-    pub async fn create_message(&self, data: InteractionCallbackData) -> Result<(), String> {
-        let (id, token) = (&self.id, &self.token);
+    pub async fn create_message(&self, body: InteractionCallbackData) -> Result<(), String> {
+        let (app_id, token) = (&self.application_id, &self.token);
 
-        let url = format!("https://discord.com/api/v10/interactions/{id}/{token}/callback");
+        let url =
+            format!("https://discord.com/api/v10/webhooks/{app_id}/{token}/messages/@original");
 
         let client = reqwest::Client::new();
 
-        let body = InteractionCallback {
-            interaction_type: 4,
-            data: Some(data),
-        };
-
         let res = client
-            .post(url)
+            .patch(url)
             .json(&body)
             .send()
             .await
@@ -281,7 +281,7 @@ impl InteractionDataOption {
 struct InteractionCallback {
     #[serde(rename = "type")]
     interaction_type: u32,
-    data: Option<InteractionCallbackData>,
+    data: InteractionCallbackData,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -304,8 +304,8 @@ impl InteractionCallbackData {
         }
     }
 
-    pub fn set_content(mut self, content: String) -> Self {
-        self.content = content;
+    pub fn set_content(mut self, content: &str) -> Self {
+        self.content = String::from(content);
         self
     }
 

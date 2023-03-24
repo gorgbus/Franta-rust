@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use event_loop::DiscordEvLoop;
 use events::Event;
@@ -8,12 +9,11 @@ use serde_json::json;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::client::events::InteractionCallbackData;
-use crate::commands::command_handler;
+use crate::commands::{builder::ApplicationCommand, command_handler};
 
 use self::event_loop::{LavalinkEvLoop, ResumeProperties};
 use self::events::{VoiceServer, VoiceState};
 
-pub mod commands;
 mod event_handler;
 mod event_loop;
 pub mod events;
@@ -88,6 +88,8 @@ impl Client {
             resume_gateway_url: String::new(),
         };
 
+        let mut players_to_destroy = Vec::new();
+
         while let Some(event) = rx.recv().await {
             match event {
                 Event::ResumeSeq(seq_id) => resume_props.seq = seq_id,
@@ -98,8 +100,6 @@ impl Client {
                 }
 
                 Event::Resume => {
-                    println!("Connection closed, attempting to resume");
-
                     socket.abort_tasks();
 
                     socket
@@ -199,14 +199,77 @@ impl Client {
                     }
 
                     if voice_state.channel_id.is_none() {
+                        let prev_voice_state = &self.voice_states.iter().find(|state| {
+                            state.guild_id == voice_state.guild_id
+                                && state.user_id == voice_state.user_id
+                        });
+
+                        if let Some(_) = self.voice_states.iter().find(|state| {
+                            state.guild_id == voice_state.guild_id && state.user_id == self.user
+                        }) {
+                            if prev_voice_state.is_some()
+                                && self
+                                    .voice_states
+                                    .iter()
+                                    .filter(|state| {
+                                        state.guild_id == voice_state.guild_id
+                                            && state.channel_id
+                                                == prev_voice_state.unwrap().channel_id
+                                    })
+                                    .count()
+                                    == 2
+                            {
+                                let tx_c = Arc::clone(&tx);
+                                let guild_id = voice_state.guild_id.clone();
+
+                                let handle = tokio::spawn(async move {
+                                    tokio::time::sleep(Duration::from_secs(300)).await;
+
+                                    if let Err(err) = tx_c.send(Event::DestroyPlayer(guild_id)) {
+                                        println!("Error sending destroy player event: {err}");
+                                    };
+                                });
+
+                                players_to_destroy.push((voice_state.guild_id.clone(), handle));
+                            }
+                        }
+
                         self.voice_states.retain(|state| {
+                            if state.user_id != voice_state.user_id {
+                                return true;
+                            }
+
                             state.guild_id != voice_state.guild_id
-                                && state.user_id != voice_state.user_id
                         });
 
                         // self.voice_states
                         //     .remove(&(voice_state.guild_id, voice_state.user_id));
                     } else {
+                        if let Some(_) = self.voice_states.iter().find(|state| {
+                            state.guild_id == voice_state.guild_id && state.user_id == self.user
+                        }) {
+                            if self
+                                .voice_states
+                                .iter()
+                                .filter(|state| {
+                                    state.guild_id == voice_state.guild_id
+                                        && state.channel_id == voice_state.channel_id
+                                })
+                                .count()
+                                == 1
+                            {
+                                if let Some((_, handle)) = players_to_destroy
+                                    .iter()
+                                    .find(|(guild_id, _)| *guild_id == voice_state.guild_id)
+                                {
+                                    handle.abort();
+
+                                    players_to_destroy
+                                        .retain(|(guild_id, _)| *guild_id != voice_state.guild_id);
+                                }
+                            }
+                        }
+
                         match self.voice_states.iter_mut().find(|state| {
                             state.guild_id == voice_state.guild_id
                                 && state.user_id == voice_state.user_id
@@ -295,9 +358,7 @@ impl Client {
 
                             if let Err(err) = interaction
                                 .create_message(
-                                    InteractionCallbackData::new()
-                                        .set_content(String::from("něco se pokazilo"))
-                                        .set_flags(64),
+                                    InteractionCallbackData::new().set_content("něco se pokazilo"),
                                 )
                                 .await
                             {
@@ -310,9 +371,7 @@ impl Client {
 
                         if let Err(err) = interaction
                             .create_message(
-                                InteractionCallbackData::new()
-                                    .set_content(String::from("něco se pokazilo"))
-                                    .set_flags(64),
+                                InteractionCallbackData::new().set_content("něco se pokazilo"),
                             )
                             .await
                         {
@@ -320,13 +379,21 @@ impl Client {
                         }
                     };
                 }
+
+                Event::DestroyPlayer(guild_id) => {
+                    if let Err(err) = self.manager.destroy_player(&guild_id) {
+                        println!("Error destroying player: {err:?}");
+                    };
+
+                    players_to_destroy.retain(|(guild_id, _)| guild_id != guild_id);
+                }
             }
         }
 
         Ok(())
     }
 
-    pub async fn add_command(&self, command: commands::ApplicationCommand) -> Result<(), String> {
+    pub async fn add_command(&self, command: ApplicationCommand) -> Result<(), String> {
         let app_id = &self.options.app_id;
 
         let url = format!("https://discord.com/api/v10/applications/{app_id}/commands");
@@ -355,7 +422,7 @@ impl Client {
     pub async fn add_guild_command(
         &self,
         guild_id: String,
-        command: commands::ApplicationCommand,
+        command: ApplicationCommand,
     ) -> Result<(), String> {
         let app_id = &self.options.app_id;
 

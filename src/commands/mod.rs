@@ -1,10 +1,14 @@
 use serde_json::Value;
 
+pub mod builder;
+
 use crate::{
     client::{
-        commands::{ApplicationCommand, ApplicationCommandOption, ApplicationCommandOptionChoice},
         events::{self, Interaction, InteractionCallbackData},
         LavalinkClient,
+    },
+    commands::builder::{
+        ApplicationCommand, ApplicationCommandOption, ApplicationCommandOptionChoice,
     },
     toulen::{get_download_url, get_players},
 };
@@ -26,6 +30,19 @@ pub async fn command_handler(
     manager: &mut LavalinkClient,
 ) -> Result<(), String> {
     match interaction.get_name() {
+        Some("ts") => {
+            if let Err(_) = interaction.ack(64).await {
+                // println!("Error acknowledging interaction: {err:?}");
+            }
+        }
+        _ => {
+            if let Err(err) = interaction.ack(0).await {
+                println!("Error acknowledging interaction: {err:?}");
+            }
+        }
+    }
+
+    match interaction.get_name() {
         Some("join") => join_channel(interaction, manager).await,
         Some("leave") => leave_channel(interaction, manager).await,
         Some("play") => play_track(interaction, manager).await,
@@ -37,6 +54,10 @@ pub async fn command_handler(
 }
 
 async fn toulen(interaction: &Interaction) -> Result<(), String> {
+    if let Err(err) = interaction.ack(64).await {
+        println!("Error acknowledging interaction: {err:?}");
+    }
+
     let name = interaction
         .data
         .as_ref()
@@ -62,11 +83,7 @@ async fn ts_download(interaction: &Interaction) -> Result<(), String> {
         .set_color(0xf17c00);
 
     interaction
-        .create_message(
-            InteractionCallbackData::new()
-                .add_embed(embed)
-                .set_flags(64),
-        )
+        .create_message(InteractionCallbackData::new().add_embed(embed))
         .await?;
 
     Ok(())
@@ -89,11 +106,7 @@ async fn ts_leaderboard(interaction: &Interaction) -> Result<(), String> {
         .set_color(0xf17c00);
 
     interaction
-        .create_message(
-            InteractionCallbackData::new()
-                .add_embed(embed)
-                .set_flags(64),
-        )
+        .create_message(InteractionCallbackData::new().add_embed(embed))
         .await?;
 
     Ok(())
@@ -105,15 +118,22 @@ async fn join_channel(
 ) -> Result<(), String> {
     if interaction.member.voice.is_none() {
         interaction
-            .create_message(
-                InteractionCallbackData::new()
-                    .set_content(String::from("musíš být v roomce"))
-                    .set_flags(64),
-            )
+            .create_message(InteractionCallbackData::new().set_content("musíš být v roomce"))
             .await?;
     } else {
-        let channel_id = interaction.member.get_voice_channel();
         let guild_id = &interaction.guild_id;
+        let channel_id = match interaction.member.get_voice_channel() {
+            Some(channel_id) => channel_id,
+            None => {
+                interaction
+                    .create_message(
+                        InteractionCallbackData::new().set_content("musíš být v roomce"),
+                    )
+                    .await?;
+
+                return Ok(());
+            }
+        };
 
         if let Some(player) = manager.get_player(guild_id) {
             let channel_id = &player.channel_id;
@@ -121,8 +141,7 @@ async fn join_channel(
             interaction
                 .create_message(
                     InteractionCallbackData::new()
-                        .set_content(format!("už je připojen v <#{channel_id}>"))
-                        .set_flags(64),
+                        .set_content(&format!("už je připojen v <#{channel_id}>")),
                 )
                 .await?;
 
@@ -133,7 +152,8 @@ async fn join_channel(
 
         interaction
             .create_message(
-                InteractionCallbackData::new().set_content(format!("připojeno do <#{channel_id}>")),
+                InteractionCallbackData::new()
+                    .set_content(&format!("připojeno do <#{channel_id}>")),
             )
             .await?;
     }
@@ -146,17 +166,22 @@ async fn leave_channel(
     manager: &mut LavalinkClient,
 ) -> Result<(), String> {
     let guild_id = &interaction.guild_id;
-    let channel_id = interaction.member.get_voice_channel();
+    let channel_id = match interaction.member.get_voice_channel() {
+        Some(channel_id) => channel_id,
+        None => {
+            interaction
+                .create_message(InteractionCallbackData::new().set_content("musíš být v roomce"))
+                .await?;
+
+            return Ok(());
+        }
+    };
 
     let player = match manager.get_player(guild_id) {
         Some(player) => player,
         None => {
             interaction
-                .create_message(
-                    InteractionCallbackData::new()
-                        .set_content(String::from("nic nehraje"))
-                        .set_flags(64),
-                )
+                .create_message(InteractionCallbackData::new().set_content("nic nehraje"))
                 .await?;
 
             return Ok(());
@@ -166,9 +191,7 @@ async fn leave_channel(
     if player.channel_id != *channel_id {
         interaction
             .create_message(
-                InteractionCallbackData::new()
-                    .set_content(String::from("musíš být ve stejné roomce"))
-                    .set_flags(64),
+                InteractionCallbackData::new().set_content("musíš být ve stejné roomce"),
             )
             .await?;
 
@@ -178,7 +201,7 @@ async fn leave_channel(
     manager.destroy_player(guild_id)?;
 
     interaction
-        .create_message(InteractionCallbackData::new().set_content(String::from("odpojeno")))
+        .create_message(InteractionCallbackData::new().set_content("odpojeno"))
         .await?;
 
     Ok(())
@@ -186,7 +209,16 @@ async fn leave_channel(
 
 async fn play_track(interaction: &Interaction, manager: &mut LavalinkClient) -> Result<(), String> {
     let guild_id = &interaction.guild_id;
-    let channel_id = interaction.member.get_voice_channel();
+    let channel_id = match interaction.member.get_voice_channel() {
+        Some(channel_id) => channel_id,
+        None => {
+            interaction
+                .create_message(InteractionCallbackData::new().set_content("musíš být v roomce"))
+                .await?;
+
+            return Ok(());
+        }
+    };
 
     let player = match manager.get_player_mut(guild_id) {
         Some(player) => player,
@@ -196,9 +228,7 @@ async fn play_track(interaction: &Interaction, manager: &mut LavalinkClient) -> 
     if player.channel_id != *channel_id {
         interaction
             .create_message(
-                InteractionCallbackData::new()
-                    .set_content(String::from("musíš být ve stejné roomce"))
-                    .set_flags(64),
+                InteractionCallbackData::new().set_content("musíš být ve stejné roomce"),
             )
             .await?;
 
@@ -227,11 +257,7 @@ async fn play_track(interaction: &Interaction, manager: &mut LavalinkClient) -> 
 
     if result.tracks.is_empty() {
         interaction
-            .create_message(
-                InteractionCallbackData::new()
-                    .set_content(String::from("nic nebylo nenalezeno"))
-                    .set_flags(64),
-            )
+            .create_message(InteractionCallbackData::new().set_content("nic nebylo nenalezeno"))
             .await?;
 
         return Ok(());
@@ -318,17 +344,22 @@ async fn pause_track(
     manager: &mut LavalinkClient,
 ) -> Result<(), String> {
     let guild_id = &interaction.guild_id;
-    let channel_id = interaction.member.get_voice_channel();
+    let channel_id = match interaction.member.get_voice_channel() {
+        Some(channel_id) => channel_id,
+        None => {
+            interaction
+                .create_message(InteractionCallbackData::new().set_content("musíš být v roomce"))
+                .await?;
+
+            return Ok(());
+        }
+    };
 
     let player = match manager.get_player_mut(guild_id) {
         Some(player) => player,
         None => {
             interaction
-                .create_message(
-                    InteractionCallbackData::new()
-                        .set_content(String::from("musíš být v roomce"))
-                        .set_flags(64),
-                )
+                .create_message(InteractionCallbackData::new().set_content("musíš být v roomce"))
                 .await?;
 
             return Ok(());
@@ -338,9 +369,7 @@ async fn pause_track(
     if player.channel_id != *channel_id {
         interaction
             .create_message(
-                InteractionCallbackData::new()
-                    .set_content(String::from("musíš být ve stejné roomce"))
-                    .set_flags(64),
+                InteractionCallbackData::new().set_content("musíš být ve stejné roomce"),
             )
             .await?;
 
@@ -357,13 +386,11 @@ async fn pause_track(
     player.pause(*paused);
 
     interaction
-        .create_message(
-            InteractionCallbackData::new().set_content(String::from(if *paused {
-                "přehrávání pozastaveno"
-            } else {
-                "pokračování v přehrávání"
-            })),
-        )
+        .create_message(InteractionCallbackData::new().set_content(if *paused {
+            "přehrávání pozastaveno"
+        } else {
+            "pokračování v přehrávání"
+        }))
         .await?;
 
     Ok(())
@@ -371,17 +398,22 @@ async fn pause_track(
 
 async fn skip_track(interaction: &Interaction, manager: &mut LavalinkClient) -> Result<(), String> {
     let guild_id = &interaction.guild_id;
-    let channel_id = interaction.member.get_voice_channel();
+    let channel_id = match interaction.member.get_voice_channel() {
+        Some(channel_id) => channel_id,
+        None => {
+            interaction
+                .create_message(InteractionCallbackData::new().set_content("musíš být v roomce"))
+                .await?;
+
+            return Ok(());
+        }
+    };
 
     let player = match manager.get_player_mut(guild_id) {
         Some(player) => player,
         None => {
             interaction
-                .create_message(
-                    InteractionCallbackData::new()
-                        .set_content(String::from("musíš být v roomce"))
-                        .set_flags(64),
-                )
+                .create_message(InteractionCallbackData::new().set_content("musíš být v roomce"))
                 .await?;
 
             return Ok(());
@@ -391,9 +423,7 @@ async fn skip_track(interaction: &Interaction, manager: &mut LavalinkClient) -> 
     if player.channel_id != *channel_id {
         interaction
             .create_message(
-                InteractionCallbackData::new()
-                    .set_content(String::from("musíš být ve stejné roomce"))
-                    .set_flags(64),
+                InteractionCallbackData::new().set_content("musíš být ve stejné roomce"),
             )
             .await?;
 
@@ -404,11 +434,7 @@ async fn skip_track(interaction: &Interaction, manager: &mut LavalinkClient) -> 
         Some(track) => track,
         None => {
             interaction
-                .create_message(
-                    InteractionCallbackData::new()
-                        .set_content(String::from("nic nehraje"))
-                        .set_flags(64),
-                )
+                .create_message(InteractionCallbackData::new().set_content("nic nehraje"))
                 .await?;
 
             return Ok(());
